@@ -3,6 +3,12 @@ package module_toolbox
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
+	"sync"
+	"teamide/pkg/base"
+	"teamide/pkg/form"
+	"teamide/pkg/ssh"
+
 	"github.com/gin-gonic/gin"
 	"github.com/team-ide/go-tool/db"
 	"github.com/team-ide/go-tool/elasticsearch"
@@ -11,11 +17,6 @@ import (
 	"github.com/team-ide/go-tool/redis"
 	"github.com/team-ide/go-tool/util"
 	"github.com/team-ide/go-tool/zookeeper"
-	"strconv"
-	"sync"
-	"teamide/pkg/base"
-	"teamide/pkg/form"
-	"teamide/pkg/ssh"
 )
 
 // EncryptOptionAttr 加密属性
@@ -823,6 +824,7 @@ func redisWorker() *ToolboxType {
 				},
 				{Label: "用户名", Name: "username", Col: 12},
 				{Label: "密码", Name: "auth", Type: "password", Col: 12, ShowPlaintextBtn: true},
+				{Label: "TSL忽略验证 (redis未配置TLS，不要选择)", Name: "insecureSkipVerify", Type: "switch"},
 				{Label: "Cert", Name: "certPath", Type: "file", Placeholder: "请上传Cert"},
 			},
 		},

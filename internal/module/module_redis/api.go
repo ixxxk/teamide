@@ -2,16 +2,17 @@ package module_redis
 
 import (
 	"encoding/base64"
-	"github.com/gin-gonic/gin"
-	"github.com/team-ide/go-tool/redis"
-	"github.com/team-ide/go-tool/util"
-	"go.uber.org/zap"
-	goSSH "golang.org/x/crypto/ssh"
 	"sort"
 	"strings"
 	"teamide/internal/module/module_toolbox"
 	"teamide/pkg/base"
 	"teamide/pkg/ssh"
+
+	"github.com/gin-gonic/gin"
+	"github.com/team-ide/go-tool/redis"
+	"github.com/team-ide/go-tool/util"
+	"go.uber.org/zap"
+	goSSH "golang.org/x/crypto/ssh"
 )
 
 type api struct {
@@ -92,6 +93,9 @@ func getServiceKey(redisConfig *redis.Config, sshConfig *ssh.Config) (key string
 	}
 	if redisConfig.CertPath != "" {
 		key += "-" + base.GetMd5String(key+redisConfig.CertPath)
+	}
+	if redisConfig.InsecureSkipVerify {
+		key += "-skip-verify"
 	}
 	if sshConfig != nil {
 		key += "-ssh-" + sshConfig.Address
