@@ -19,7 +19,9 @@ import (
 	_ "github.com/team-ide/go-tool/db/db_type_sqlite"
 	"github.com/team-ide/go-tool/util"
 	"go.uber.org/zap"
+	goSSH "golang.org/x/crypto/ssh"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -171,26 +173,76 @@ func getService(config *db.Config, sshConfig *ssh.Config) (res db.IService, err 
 	var serviceInfo *base.ServiceInfo
 	serviceInfo, err = base.GetService(key, func() (res *base.ServiceInfo, err error) {
 		var s db.IService
+		var sshTunnel *SSHTunnel
+
 		if sshConfig != nil {
-			config.SSHClient, err = ssh.NewClient(*sshConfig)
-			if err != nil {
-				util.Logger.Error("getDatabaseService ssh NewClient error", zap.Any("key", key), zap.Error(err))
-				return
+			// 对于不支持SSHClient的数据库类型，使用本地端口转发
+			needTunnel := config.Type == "dameng" || config.Type == "shentong" || config.Type == "oracle"
+
+			if needTunnel {
+				// 创建SSH隧道
+				sshTunnel, err = NewSSHTunnel(sshConfig, config.Host, config.Port)
+				if err != nil {
+					util.Logger.Error("create ssh tunnel error", zap.Any("key", key), zap.Error(err))
+					return
+				}
+
+				err = sshTunnel.Start()
+				if err != nil {
+					util.Logger.Error("start ssh tunnel error", zap.Any("key", key), zap.Error(err))
+					return
+				}
+
+				// 修改配置为本地地址
+				originalHost := config.Host
+				originalPort := config.Port
+				config.Host = "127.0.0.1"
+				config.Port = sshTunnel.LocalPort
+
+				util.Logger.Info("ssh tunnel created",
+					zap.String("originalHost", originalHost),
+					zap.Int("originalPort", originalPort),
+					zap.String("localHost", config.Host),
+					zap.Int("localPort", config.Port),
+				)
+			} else {
+				// 支持SSHClient的数据库类型，使用原有方式
+				config.SSHClient, err = ssh.NewClient(*sshConfig)
+				if err != nil {
+					util.Logger.Error("getDatabaseService ssh NewClient error", zap.Any("key", key), zap.Error(err))
+					return
+				}
 			}
 		}
+
 		if config.Type == "mysql" && config.DsnAppend == "" {
 			config.DsnAppend = "&charset=utf8mb4"
 		}
+
 		s, err = db.New(config)
 		if err != nil {
 			util.Logger.Error("getDatabaseService error", zap.Any("key", key), zap.Error(err))
+			// 如果创建失败，关闭SSH隧道
+			if sshTunnel != nil {
+				sshTunnel.Close()
+			}
 			return
 		}
+
+		stopFunc := s.Close
+		if sshTunnel != nil {
+			// 如果有SSH隧道，关闭时需要同时关闭隧道
+			stopFunc = func() {
+				s.Close()
+				sshTunnel.Close()
+			}
+		}
+
 		res = &base.ServiceInfo{
 			WaitTime:    10 * 60 * 1000,
 			LastUseTime: util.GetNowMilli(),
 			Service:     s,
-			Stop:        s.Close,
+			Stop:        stopFunc,
 		}
 		return
 	})
@@ -1098,4 +1150,125 @@ func removeWorkerTasks(workerId string) {
 	}
 	delete(workerTasksCache, workerId)
 	return
+}
+
+// SSHTunnel SSH隧道实现，用于不支持SSHClient的数据库类型
+type SSHTunnel struct {
+	sshConfig  *ssh.Config
+	remoteHost string
+	remotePort int
+	LocalPort  int
+	listener   net.Listener
+	sshClient  *goSSH.Client
+	closed     bool
+	mu         sync.Mutex
+}
+
+// NewSSHTunnel 创建SSH隧道
+func NewSSHTunnel(sshConfig *ssh.Config, remoteHost string, remotePort int) (*SSHTunnel, error) {
+	return &SSHTunnel{
+		sshConfig:  sshConfig,
+		remoteHost: remoteHost,
+		remotePort: remotePort,
+	}, nil
+}
+
+// Start 启动SSH隧道
+func (t *SSHTunnel) Start() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return errors.New("tunnel is closed")
+	}
+
+	// 创建SSH客户端
+	client, err := ssh.NewClient(*t.sshConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create ssh client: %w", err)
+	}
+	t.sshClient = client
+
+	// 创建本地监听器，使用随机端口
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.sshClient.Close()
+		return fmt.Errorf("failed to listen on local port: %w", err)
+	}
+	t.listener = listener
+	t.LocalPort = listener.Addr().(*net.TCPAddr).Port
+
+	// 启动转发goroutine
+	go t.forward()
+
+	return nil
+}
+
+// forward 处理端口转发
+func (t *SSHTunnel) forward() {
+	for {
+		localConn, err := t.listener.Accept()
+		if err != nil {
+			if !t.closed {
+				util.Logger.Error("ssh tunnel accept error", zap.Error(err))
+			}
+			return
+		}
+
+		go t.handleConnection(localConn)
+	}
+}
+
+// handleConnection 处理单个连接
+func (t *SSHTunnel) handleConnection(localConn net.Conn) {
+	defer localConn.Close()
+
+	// 通过SSH连接到远程目标
+	remoteAddr := fmt.Sprintf("%s:%d", t.remoteHost, t.remotePort)
+	remoteConn, err := t.sshClient.Dial("tcp", remoteAddr)
+	if err != nil {
+		util.Logger.Error("ssh tunnel dial remote error",
+			zap.String("remoteAddr", remoteAddr),
+			zap.Error(err),
+		)
+		return
+	}
+	defer remoteConn.Close()
+
+	// 双向数据转发
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// local -> remote
+	go func() {
+		defer wg.Done()
+		io.Copy(remoteConn, localConn)
+	}()
+
+	// remote -> local
+	go func() {
+		defer wg.Done()
+		io.Copy(localConn, remoteConn)
+	}()
+
+	wg.Wait()
+}
+
+// Close 关闭SSH隧道
+func (t *SSHTunnel) Close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return
+	}
+	t.closed = true
+
+	if t.listener != nil {
+		t.listener.Close()
+	}
+
+	if t.sshClient != nil {
+		t.sshClient.Close()
+	}
 }

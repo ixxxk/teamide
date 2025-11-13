@@ -497,7 +497,7 @@ func databaseWorker() *ToolboxType {
 					},
 				},
 				{
-					Label: "SSH隧道", Name: "sshToolboxId", Type: "select", VIf: `type == 'mysql' || type == 'kingbase' || type == 'postgresql' || type == 'opengauss'`,
+					Label: "SSH隧道", Name: "sshToolboxId", Type: "select", VIf: `type == 'mysql' || type == 'kingbase' || type == 'postgresql' || type == 'opengauss' || type == 'dameng' || type == 'shentong' || type == 'oracle'`,
 					OptionsName: "sshToolboxOptions",
 					Rules:       []*form.Rule{},
 				},
@@ -578,6 +578,12 @@ func elasticsearchWorker() *ToolboxType {
 		ConfigForm: &form.Form{
 			Fields: []*form.Field{
 				{
+					Label: "SSH隧道", Name: "sshToolboxId", Type: "select",
+					OptionsName: "sshToolboxOptions",
+					Rules:       []*form.Rule{},
+					Col:         12,
+				},
+				{
 					Label: "连接地址（http://127.0.0.1:9200）", Name: "url", DefaultValue: "http://127.0.0.1:9200",
 					Rules: []*form.Rule{
 						{Required: true, Message: "连接地址不能为空"},
@@ -629,6 +635,12 @@ func kafkaWorker() *ToolboxType {
 		Text: "Kafka",
 		ConfigForm: &form.Form{
 			Fields: []*form.Field{
+				{
+					Label: "SSH隧道", Name: "sshToolboxId", Type: "select",
+					OptionsName: "sshToolboxOptions",
+					Rules:       []*form.Rule{},
+					Col:         12,
+				},
 				{Label: "连接地址（127.0.0.1:9092）", Name: "address", DefaultValue: "127.0.0.1:9092",
 					Rules: []*form.Rule{
 						{Required: true, Message: "连接地址不能为空"},
@@ -865,6 +877,12 @@ func mongodbWorker() *ToolboxType {
 		Text: "Mongodb",
 		ConfigForm: &form.Form{
 			Fields: []*form.Field{
+				{
+					Label: "SSH隧道", Name: "sshToolboxId", Type: "select",
+					OptionsName: "sshToolboxOptions",
+					Rules:       []*form.Rule{},
+					Col:         12,
+				},
 				{
 					Label: "连接地址（127.0.0.1:27017）", Name: "address", DefaultValue: "127.0.0.1:27017",
 					Rules: []*form.Rule{
