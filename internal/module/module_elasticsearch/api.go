@@ -5,6 +5,7 @@ import (
 	"github.com/team-ide/go-tool/elasticsearch"
 	"github.com/team-ide/go-tool/util"
 	"go.uber.org/zap"
+	"strings"
 	"sync"
 	"teamide/internal/module/module_toolbox"
 	"teamide/pkg/base"
@@ -275,7 +276,7 @@ func (this_ *api) getMapping(requestBean *base.RequestBean, c *gin.Context) (res
 		return
 	}
 
-	res, err = service.GetMapping(request.IndexName)
+	res, err = this_.loadMapping(service, request.IndexName)
 	if err != nil {
 		return
 	}
@@ -583,6 +584,78 @@ func (this_ *api) close(requestBean *base.RequestBean, c *gin.Context) (res inte
 		return
 	}
 	removeWorkerTasks(request.WorkerId)
+	return
+}
+
+func (this_ *api) loadMapping(service elasticsearch.IService, indexName string) (res interface{}, err error) {
+	if service == nil {
+		return
+	}
+	path := this_.buildMappingPath(indexName)
+	options := elasticsearch.PerformRequestOptions{}
+	options.Method = "GET"
+	options.Path = path
+	var response *elasticsearch.PerformResponse
+	response, err = service.PerformRequest(options)
+	if err != nil {
+		return
+	}
+	body := response.Body
+	trimmed := strings.TrimSpace(indexName)
+	if trimmed == "" {
+		var data map[string]interface{}
+		if len(body) > 0 {
+			err = util.JSONDecodeUseNumber(body, &data)
+			if err != nil {
+				return
+			}
+		} else {
+			data = map[string]interface{}{}
+		}
+		res = data
+		return
+	}
+	var payload map[string]interface{}
+	if len(body) > 0 {
+		err = util.JSONDecodeUseNumber(body, &payload)
+		if err != nil {
+			return
+		}
+	}
+	res = this_.pickMappingEntry(payload, trimmed)
+	return
+}
+
+func (this_ *api) buildMappingPath(indexName string) string {
+	trimmed := strings.TrimSpace(indexName)
+	if trimmed == "" {
+		return "/_mapping"
+	}
+	trimmed = strings.TrimLeft(trimmed, "/")
+	return "/" + trimmed + "/_mapping"
+}
+
+func (this_ *api) pickMappingEntry(payload map[string]interface{}, indexName string) (res interface{}) {
+	if len(payload) == 0 {
+		return
+	}
+	names := strings.Split(indexName, ",")
+	for _, name := range names {
+		key := strings.TrimSpace(name)
+		if key == "" {
+			continue
+		}
+		if value, ok := payload[key]; ok {
+			res = value
+			return
+		}
+	}
+	if len(payload) == 1 {
+		for _, value := range payload {
+			res = value
+			return
+		}
+	}
 	return
 }
 
