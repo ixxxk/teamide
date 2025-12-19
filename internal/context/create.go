@@ -89,8 +89,10 @@ func (this_ *ServerContext) Init(serverConfig *config.ServerConfig) (err error) 
 			keyPath := this_.RootDir + "conf/server.key"
 			if e, _ := util.PathExists(crtPath); e {
 				if e, _ = util.PathExists(keyPath); e {
+					// Desktop 模式默认不自动开启 HTTPS，避免自签证书导致 WebView/浏览器握手失败（unknown certificate）
+					// 如需启用 HTTPS，可设置环境变量 TEAMIDE_DESKTOP_HTTPS=1
 					serverConfig.Server.TLS = new(config.ServerTLS)
-					serverConfig.Server.TLS.Open = true
+					serverConfig.Server.TLS.Open = strings.TrimSpace(os.Getenv("TEAMIDE_DESKTOP_HTTPS")) == "1"
 					serverConfig.Server.TLS.Cert = crtPath
 					serverConfig.Server.TLS.Key = keyPath
 				}

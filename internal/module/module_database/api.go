@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"teamide/internal/module/module_toolbox"
 	"teamide/pkg/base"
@@ -126,6 +127,56 @@ func (this_ *api) getConfig(requestBean *base.RequestBean, c *gin.Context) (conf
 	sshConfig, err = this_.toolboxService.BindConfig(requestBean, c, config)
 	if err != nil {
 		return
+	}
+	return
+}
+
+// getDatabaseName 从 Query 获取 databaseName，用于 PostgreSQL/OpenGauss 跨库访问
+func getDatabaseName(c *gin.Context) string {
+	return c.Query("databaseName")
+}
+
+func isPgType(dbType string) bool {
+	switch strings.ToLower(dbType) {
+	case "postgresql", "postgres", "pgsql", "opengauss":
+		return true
+	default:
+		return false
+	}
+}
+
+// getServiceWithDb 根据 databaseName（PG/OpenGauss）动态切库；当未配置 DbName 时 PG 默认使用 postgres 建连
+func getServiceWithDb(config *db.Config, sshConfig *ssh.Config, databaseName string) (res db.IService, err error) {
+	cfg := *config
+	if isPgType(cfg.Type) && databaseName != "" {
+		cfg.DbName = databaseName
+	}
+	if isPgType(cfg.Type) && cfg.DbName == "" {
+		cfg.DbName = "postgres"
+	}
+	res, err = getService(&cfg, sshConfig)
+	return
+}
+
+// toMapSlice 将 dataList 转成统一的 []map[string]interface{}，兼容多种返回类型
+func toMapSlice(data interface{}) (res []map[string]interface{}) {
+	switch v := data.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if row, ok := item.(map[string]interface{}); ok {
+				res = append(res, row)
+			}
+		}
+	case []map[string]interface{}:
+		res = v
+	case []map[string]string:
+		for _, item := range v {
+			row := map[string]interface{}{}
+			for k, vv := range item {
+				row[k] = vv
+			}
+			res = append(res, row)
+		}
 	}
 	return
 }
@@ -303,7 +354,7 @@ func (this_ *api) check(requestBean *base.RequestBean, c *gin.Context) (res inte
 	if err != nil {
 		return
 	}
-	_, err = getService(config, sshConfig)
+	_, err = getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -316,7 +367,7 @@ func (this_ *api) info(requestBean *base.RequestBean, c *gin.Context) (res inter
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -333,7 +384,7 @@ func (this_ *api) data(requestBean *base.RequestBean, c *gin.Context) (res inter
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -353,12 +404,46 @@ func (this_ *api) owners(requestBean *base.RequestBean, c *gin.Context) (res int
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	databaseName := getDatabaseName(c)
+	service, err := getServiceWithDb(config, sshConfig, databaseName)
 	if err != nil {
 		return
 	}
 
 	param := this_.getParam(requestBean, c)
+
+	// PostgreSQL/OpenGauss：未指定 databaseName 且未配置 DbName（或 DbName=postgres）时，先列出所有数据库
+	if isPgType(config.Type) {
+		if databaseName == "" && (config.DbName == "" || strings.EqualFold(config.DbName, "postgres")) {
+			sqlText := "SELECT datname AS name FROM pg_database WHERE datistemplate=false ORDER BY datname"
+			executeList, _, queryErr := service.ExecuteSQL(param, "", sqlText, &db.ExecuteOptions{})
+			if queryErr != nil {
+				err = queryErr
+				return
+			}
+			var owners []*dialect.OwnerModel
+			if len(executeList) > 0 {
+				if dataListRaw, ok := executeList[0]["dataList"]; ok {
+					for _, row := range toMapSlice(dataListRaw) {
+						name := util.GetStringValue(row["name"])
+						if name == "" {
+							name = util.GetStringValue(row["datname"])
+						}
+						if name != "" {
+							owners = append(owners, &dialect.OwnerModel{
+								OwnerName: name,
+								Extend: map[string]interface{}{
+									"isDatabase": true,
+								},
+							})
+						}
+					}
+				}
+			}
+			res = owners
+			return
+		}
+	}
 
 	// 添加日志输出，帮助排查达梦数据库库列表缺失问题
 	util.Logger.Info("[Database OwnersSelect] Start",
@@ -438,7 +523,7 @@ func (this_ *api) ownerCreate(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -460,7 +545,7 @@ func (this_ *api) ownerDelete(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -483,7 +568,7 @@ func (this_ *api) ownerCreateSql(requestBean *base.RequestBean, c *gin.Context) 
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -506,7 +591,7 @@ func (this_ *api) ddl(requestBean *base.RequestBean, c *gin.Context) (res interf
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -529,7 +614,7 @@ func (this_ *api) model(requestBean *base.RequestBean, c *gin.Context) (res inte
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -552,7 +637,7 @@ func (this_ *api) tables(requestBean *base.RequestBean, c *gin.Context) (res int
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -575,7 +660,7 @@ func (this_ *api) tableDetail(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -598,7 +683,7 @@ func (this_ *api) tableCreate(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -626,7 +711,7 @@ func (this_ *api) tableCreateSql(requestBean *base.RequestBean, c *gin.Context) 
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -654,7 +739,7 @@ func (this_ *api) tableUpdate(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -682,7 +767,7 @@ func (this_ *api) tableUpdateSql(requestBean *base.RequestBean, c *gin.Context) 
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -710,7 +795,7 @@ func (this_ *api) tableDelete(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -733,7 +818,7 @@ func (this_ *api) tableDataTrim(requestBean *base.RequestBean, c *gin.Context) (
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -756,7 +841,7 @@ func (this_ *api) tableData(requestBean *base.RequestBean, c *gin.Context) (res 
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -779,7 +864,7 @@ func (this_ *api) dataListSql(requestBean *base.RequestBean, c *gin.Context) (re
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -819,7 +904,7 @@ func (this_ *api) dataListExec(requestBean *base.RequestBean, c *gin.Context) (r
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -846,7 +931,7 @@ func (this_ *api) executeSQL(requestBean *base.RequestBean, c *gin.Context) (res
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -873,7 +958,7 @@ func (this_ *api) _import(requestBean *base.RequestBean, c *gin.Context) (res in
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -907,7 +992,7 @@ func (this_ *api) export(requestBean *base.RequestBean, c *gin.Context) (res int
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
@@ -1033,7 +1118,7 @@ func (this_ *api) sync(requestBean *base.RequestBean, c *gin.Context) (res inter
 	if err != nil {
 		return
 	}
-	service, err := getService(config, sshConfig)
+	service, err := getServiceWithDb(config, sshConfig, getDatabaseName(c))
 	if err != nil {
 		return
 	}
