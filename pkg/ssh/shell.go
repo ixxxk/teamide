@@ -74,31 +74,32 @@ func (this_ *ShellClient) closeSession(session *ssh.Session) {
 
 func NewSSHShell(terminalSize *terminal.Size, sshSession *ssh.Session) (err error) {
 	modes := ssh.TerminalModes{
+		// 保持回显开启：允许前端看到初始化命令（用户期望的行为）
 		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 		ssh.VINTR:         '\x03',
 	}
-	var modeList []byte
-	for k, v := range modes {
-		kv := struct {
-			Key byte
-			Val uint32
-		}{k, v}
-		modeList = append(modeList, ssh.Marshal(&kv)...)
+	term := "xterm-256color"
+	rows := 24
+	cols := 80
+	if terminalSize != nil {
+		if terminalSize.Rows > 0 {
+			rows = terminalSize.Rows
+		}
+		if terminalSize.Cols > 0 {
+			cols = terminalSize.Cols
+		}
 	}
-	modeList = append(modeList, 0)
-	req := ptyRequestMsg{
-		Term:     "xterm",
-		Modelist: string(modeList),
-	}
-	if terminalSize.Cols > 0 && terminalSize.Rows > 0 {
-		req.Columns = uint32(terminalSize.Cols)
-		req.Rows = uint32(terminalSize.Rows)
-	}
-	_, err = sshSession.SendRequest("pty-req", true, ssh.Marshal(&req))
+	// 使用标准 RequestPty，让 ECHO 等 mode 在更多 SSH Server 上生效
+	err = sshSession.RequestPty(term, rows, cols, modes)
 	if err != nil {
-		return
+		// 兼容部分服务器不支持 xterm-256color，回退到 xterm
+		term = "xterm"
+		err = sshSession.RequestPty(term, rows, cols, modes)
+		if err != nil {
+			return
+		}
 	}
 
 	var ok bool

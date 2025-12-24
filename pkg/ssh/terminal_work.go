@@ -51,6 +51,40 @@ type terminalService struct {
 	keepaliveLock sync.Mutex
 }
 
+func (this_ *terminalService) initShellColor() {
+	// 不修改服务器文件，只对当前会话生效。
+	// 说明：这个初始化命令会被远端 TTY 回显到前端（用户接受“能看到命令”）。
+	snippet := "\n" +
+		"# teamide-color-init\n" +
+		"if [ -t 1 ]; then\n" +
+		"  if command -v dircolors >/dev/null 2>&1; then\n" +
+		"    eval \"$(dircolors -b 2>/dev/null)\" >/dev/null 2>&1\n" +
+		"  fi\n" +
+		"  if [ -z \"${LS_COLORS-}\" ]; then\n" +
+		"    export LS_COLORS='rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.zip=01;31:*.gz=01;31:*.bz2=01;31:*.xz=01;31:*.7z=01;31:*.rar=01;31:*.jpg=01;35:*.jpeg=01;35:*.png=01;35:*.gif=01;35:*.bmp=01;35:*.svg=01;35:*.mp3=01;35:*.mp4=01;35:*.mkv=01;35:*.log=00;33:*.txt=00;37:*.md=00;37'\n" +
+		"  fi\n" +
+		"  if ls --color=auto . >/dev/null 2>&1; then\n" +
+		"    alias ls='ls --color=auto'\n" +
+		"    alias ll='ls -alF --color=auto'\n" +
+		"    alias la='ls -A --color=auto'\n" +
+		"    alias l='ls -CF --color=auto'\n" +
+		"  elif ls -G . >/dev/null 2>&1; then\n" +
+		"    export CLICOLOR=1\n" +
+		"    alias ls='ls -G'\n" +
+		"    alias ll='ls -alFG'\n" +
+		"    alias la='ls -AG'\n" +
+		"    alias l='ls -CFG'\n" +
+		"  fi\n" +
+		"  if grep --color=auto \"\" /dev/null >/dev/null 2>&1; then\n" +
+		"    alias grep='grep --color=auto'\n" +
+		"    alias egrep='egrep --color=auto'\n" +
+		"    alias fgrep='fgrep --color=auto'\n" +
+		"  fi\n" +
+		"fi\n"
+	_, _ = this_.writeSilent([]byte(snippet))
+	return
+}
+
 func (this_ *terminalService) IsWindows() (isWindows bool, err error) {
 	isWindows = false
 	return
@@ -212,6 +246,11 @@ func (this_ *terminalService) Start(size *terminal.Size) (err error) {
 	}
 	util.Logger.Info("SSH NewSession success", zap.Any("address", this_.config.Address))
 
+	// 尽量在 shell 启动前设置 TERM / COLORTERM，方便远端 .bashrc/.zshrc 等判断是否启用彩色输出
+	//（部分服务器可能拒绝 env request，此处忽略错误）
+	_ = this_.sshSession.Setenv("TERM", "xterm-256color")
+	_ = this_.sshSession.Setenv("COLORTERM", "truecolor")
+
 	err = NewSSHShell(size, this_.sshSession)
 	if err != nil {
 		util.Logger.Error("Create SSH Shell Error", zap.Error(err))
@@ -229,6 +268,10 @@ func (this_ *terminalService) Start(size *terminal.Size) (err error) {
 		return
 	}
 	this_.lastActive = time.Now()
+
+	// 初始化会话内常用命令彩色输出（不修改服务器文件，仅当前会话生效）
+	this_.initShellColor()
+
 	//if this_.lastUser != "" {
 	//	if this_.lastUser != this_.config.Username {
 	//		_, _ = this_.Write([]byte("sudo -i\n"))
