@@ -102,6 +102,8 @@ func (this_ *ToolboxApi) insert(requestBean *base.RequestBean, c *gin.Context) (
 
 	toolbox := request.ToolboxModel
 	toolbox.UserId = requestBean.JWT.UserId
+	// 创建工具时不接受外部指定 toolboxId，避免导入/复制导致主键冲突
+	toolbox.ToolboxId = 0
 
 	_, err = this_.ToolboxService.Insert(toolbox)
 	if err != nil {

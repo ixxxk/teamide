@@ -218,12 +218,8 @@ func (this_ *ToolboxService) Insert(toolbox *ToolboxModel) (rowsAffected int64, 
 		err = errors.New(fmt.Sprint("工具[", toolbox.Name, "]已存在"))
 		return
 	}
-	if toolbox.ToolboxId == 0 {
-		toolbox.ToolboxId, err = this_.idService.GetNextID(module_id.IDTypeToolbox)
-		if err != nil {
-			return
-		}
-	}
+	// 插入时如果带了 toolboxId，认为是外部指定（例如复制/导入场景），不做自动改写
+	initialWasZero := toolbox.ToolboxId == 0
 	if toolbox.CreateTime.IsZero() {
 		toolbox.CreateTime = time.Now()
 	}
@@ -243,11 +239,46 @@ func (this_ *ToolboxService) Insert(toolbox *ToolboxModel) (rowsAffected int64, 
 
 	sql := `INSERT INTO ` + TableToolbox + `(` + columns + `) VALUES (` + values + `) `
 
-	rowsAffected, err = this_.DatabaseWorker.Exec(sql, []interface{}{toolbox.ToolboxId, toolbox.ToolboxType, toolbox.Name, toolbox.Comment, toolbox.Visibility, toolbox.Option, toolbox.UserId, toolbox.CreateTime})
-	if err != nil {
+	if !initialWasZero {
+		rowsAffected, err = this_.DatabaseWorker.Exec(sql, []interface{}{toolbox.ToolboxId, toolbox.ToolboxType, toolbox.Name, toolbox.Comment, toolbox.Visibility, toolbox.Option, toolbox.UserId, toolbox.CreateTime})
+		if err != nil {
+			this_.Logger.Error("Insert Error", zap.Error(err))
+		}
+		return
+	}
+
+	// toolboxId 可能因导入/迁移导致 ID 游标落后而冲突，这里做一次自愈重试
+	for i := 0; i < 3; i++ {
+		if toolbox.ToolboxId == 0 {
+			toolbox.ToolboxId, err = this_.idService.GetNextID(module_id.IDTypeToolbox)
+			if err != nil {
+				return
+			}
+		}
+
+		rowsAffected, err = this_.DatabaseWorker.Exec(sql, []interface{}{toolbox.ToolboxId, toolbox.ToolboxType, toolbox.Name, toolbox.Comment, toolbox.Visibility, toolbox.Option, toolbox.UserId, toolbox.CreateTime})
+		if err == nil {
+			return
+		}
+
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") && strings.Contains(err.Error(), TableToolbox+".toolboxId") {
+			var maxId int64
+			_, qErr := this_.DatabaseWorker.QueryOne(`SELECT COALESCE(MAX(toolboxId),0) FROM `+TableToolbox, []interface{}{}, &maxId)
+			if qErr != nil {
+				this_.Logger.Error("Insert Error", zap.Error(err))
+				return
+			}
+			_ = this_.idService.EnsureAtLeast(module_id.IDTypeToolbox, maxId)
+			toolbox.ToolboxId = 0
+			continue
+		}
+
 		this_.Logger.Error("Insert Error", zap.Error(err))
 		return
 	}
+
+	// 多次重试仍失败
+	this_.Logger.Error("Insert Error", zap.Error(err))
 
 	return
 }

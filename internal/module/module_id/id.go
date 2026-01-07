@@ -21,6 +21,27 @@ type IDService struct {
 	*context.ServerContext
 }
 
+// EnsureAtLeast 确保指定类型的当前ID不小于 minValue。
+// 用于导入/迁移数据后修复 ID 游标落后导致的 UNIQUE 冲突问题。
+func (this_ *IDService) EnsureAtLeast(idType IDType, minValue int64) (err error) {
+	locker := module_lock.GetLock(fmt.Sprintf("ID:EnsureAtLeast:%d", idType))
+	locker.Lock()
+	defer locker.Unlock()
+
+	var current int64
+	current, err = this_.getID(idType)
+	if err != nil {
+		return
+	}
+	if current < minValue {
+		err = this_.updateID(idType, minValue)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
 // GetNextID 根据类型获取一个ID
 func (this_ *IDService) GetNextID(idType IDType) (id int64, err error) {
 	ids, err := this_.GetNextIDs(idType, 1)
