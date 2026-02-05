@@ -59,19 +59,19 @@ func searchV7WithLikeFix(service *elasticsearch.V7Service, indexName string, pag
 
 		switch op {
 		case "like":
-			q = buildLikeWildcardQuery(where.Name, where.Value, likeModeContains, useCaseInsensitive)
+			q = buildLikeQuery(where.Name, where.Value, likeModeContains, useCaseInsensitive)
 		case "not like":
-			q = buildLikeWildcardQuery(where.Name, where.Value, likeModeContains, useCaseInsensitive)
+			q = buildLikeQuery(where.Name, where.Value, likeModeContains, useCaseInsensitive)
 			isNot = true
 		case "like start":
-			q = buildLikeWildcardQuery(where.Name, where.Value, likeModeStart, useCaseInsensitive)
+			q = buildLikeQuery(where.Name, where.Value, likeModeStart, useCaseInsensitive)
 		case "not like start":
-			q = buildLikeWildcardQuery(where.Name, where.Value, likeModeStart, useCaseInsensitive)
+			q = buildLikeQuery(where.Name, where.Value, likeModeStart, useCaseInsensitive)
 			isNot = true
 		case "like end":
-			q = buildLikeWildcardQuery(where.Name, where.Value, likeModeEnd, useCaseInsensitive)
+			q = buildLikeQuery(where.Name, where.Value, likeModeEnd, useCaseInsensitive)
 		case "not like end":
-			q = buildLikeWildcardQuery(where.Name, where.Value, likeModeEnd, useCaseInsensitive)
+			q = buildLikeQuery(where.Name, where.Value, likeModeEnd, useCaseInsensitive)
 			isNot = true
 		case "between":
 			q = elastic.NewRangeQuery(where.Name).Gte(where.Before).Lte(where.After)
@@ -154,7 +154,41 @@ const (
 	likeModeEnd
 )
 
-func buildLikeWildcardQuery(field string, value string, mode likeMode, useCaseInsensitive bool) elastic.Query {
+func buildLikeQuery(field string, value string, mode likeMode, useCaseInsensitive bool) elastic.Query {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return elastic.NewMatchAllQuery()
+	}
+
+	var queries []elastic.Query
+
+	queries = append(queries, buildLikeWildcardQueryForField(field, value, mode, useCaseInsensitive))
+	if !strings.HasSuffix(field, ".keyword") {
+		queries = append(queries, buildLikeWildcardQueryForField(field+".keyword", value, mode, useCaseInsensitive))
+	}
+
+	value = strings.TrimSpace(value)
+	if value != "" {
+		switch mode {
+		case likeModeContains:
+			queries = append(queries, elastic.NewMatchPhraseQuery(field, value))
+		case likeModeStart:
+			queries = append(queries, elastic.NewMatchPhrasePrefixQuery(field, value))
+		}
+	}
+
+	if len(queries) == 1 {
+		return queries[0]
+	}
+
+	b := elastic.NewBoolQuery().MinimumNumberShouldMatch(1)
+	for _, q := range queries {
+		b.Should(q)
+	}
+	return b
+}
+
+func buildLikeWildcardQueryForField(field string, value string, mode likeMode, useCaseInsensitive bool) elastic.Query {
 	if useCaseInsensitive {
 		return elastic.NewWildcardQuery(field, buildLikeWildcardPattern(value, mode)).CaseInsensitive(true)
 	}
