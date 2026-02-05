@@ -318,7 +318,7 @@ func (this_ *api) search(requestBean *base.RequestBean, c *gin.Context) (res int
 		return
 	}
 
-	res, err = service.Search(request.IndexName, request.PageIndex, request.PageSize, request.WhereList, request.OrderList)
+	res, err = searchWithLikeCaseFix(service, request.IndexName, request.PageIndex, request.PageSize, request.WhereList, request.OrderList)
 	if err != nil {
 		return
 	}
